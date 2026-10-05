@@ -168,7 +168,11 @@ async function initFirebase() {
   let db;
   try {
     // Local cache = fewer reads (stays inside the free tier) and the site still shows quotes offline.
-    db = fsMod.initializeFirestore(app, { localCache: fsMod.persistentLocalCache({ tabManager: fsMod.persistentMultipleTabManager() }) });
+    // Long-polling auto-detect helps on school / work networks that block streaming connections.
+    db = fsMod.initializeFirestore(app, {
+      localCache: fsMod.persistentLocalCache({ tabManager: fsMod.persistentMultipleTabManager() }),
+      experimentalAutoDetectLongPolling: true
+    });
   } catch {
     db = fsMod.getFirestore(app);
   }
@@ -184,15 +188,21 @@ async function initFirebase() {
     state.quotesReady = false;
     state.users = [];
     state.requests = [];
+    state.loadError = null;
+    state.dataError = null;
     if (!user) {
       state.authReady = true;
       render();
       return;
     }
     try {
-      await ensureProfile(user);
+      await withTimeout(ensureProfile(user), 20000);
     } catch (e) {
-      fail(e);
+      console.error(e);
+      state.loadError = describeError(e);
+      state.authReady = true;
+      render();
+      return;
     }
     let lastRole = null;
     unsubs.push(fb.onSnapshot(fb.doc(db, "users", user.uid), (snap) => {
@@ -206,8 +216,33 @@ async function initFirebase() {
       } else {
         render("data");
       }
-    }, fail));
+    }, (e) => {
+      console.error(e);
+      state.loadError = describeError(e);
+      state.authReady = true;
+      render();
+    }));
   });
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error("timed out"), { code: "timeout" })), ms))
+  ]);
+}
+
+// Turn Firebase errors into something a person can act on.
+function describeError(e) {
+  const code = String(e?.code || "");
+  const msg = String(e?.message || e || "");
+  if (code === "permission-denied" || msg.includes("permission")) {
+    return "The database refused (permission denied). An owner needs to publish the latest security rules: run <code>npx firebase-tools deploy</code>.";
+  }
+  if (["unavailable", "timeout", "deadline-exceeded"].includes(code) || /offline|timed out|network/i.test(msg)) {
+    return "Can't reach the database. If you're on <b>school Wi-Fi or a school Chromebook</b>, it's probably blocking it. Try phone data or home Wi-Fi.";
+  }
+  return `Something went wrong: ${esc(code || msg)}`;
 }
 
 async function ensureProfile(user) {
@@ -229,8 +264,14 @@ function startDataListeners() {
   dataUnsubs.push(fb.onSnapshot(fb.collection(db, "quotes"), (snap) => {
     state.quotes = snap.docs.map((d) => ({ id: d.id, ...d.data(opts) }));
     state.quotesReady = true;
+    state.dataError = null;
     render("data");
-  }, fail));
+  }, (e) => {
+    console.error(e);
+    state.dataError = describeError(e);
+    state.quotesReady = true;
+    render();
+  }));
 
   if (isStaff()) {
     dataUnsubs.push(fb.onSnapshot(fb.collection(db, "users"), (snap) => {
@@ -294,10 +335,18 @@ function render(reason) {
   if (!configured) html = setupView();
   else if (!state.authReady) html = loadingView();
   else if (!state.user) html = loginView();
+  else if (state.loadError) html = errorView(state.loadError);
   else if (!state.profile) html = state.profileMissing
-    ? emptyBox("NO PROFILE", `Signed in, but your member profile couldn't be created. Make sure <code>firestore.rules</code> is published (see README), then <button class="linkish" data-action="signout">sign out</button> and back in.`)
+    ? errorView(`Signed in, but your member profile couldn't be created. An owner may need to publish the security rules (<code>npx firebase-tools deploy</code>).`)
     : loadingView();
-  else html = (VIEWS[name] || notFoundView)(parts.slice(1), query);
+  else html = (state.dataError ? `<div class="panel" role="alert"><h3>Can't load quotes</h3><p>${state.dataError}</p><button class="btn small" data-action="reload">Retry</button></div>` : "")
+    + (VIEWS[name] || notFoundView)(parts.slice(1), query);
+
+  // if a full-page loading screen hangs around, offer help instead of spinning forever
+  const stuck = configured && html.startsWith('<div class="loading">');
+  if (stuck && !slowTimer && !ui.slow) slowTimer = setTimeout(() => { ui.slow = true; slowTimer = null; render(); }, 12000);
+  if (!stuck) { clearTimeout(slowTimer); slowTimer = null; ui.slow = false; }
+  if (stuck && ui.slow) html = slowView();
 
   // keep focus + cursor in search boxes across re-renders
   const active = document.activeElement;
@@ -371,6 +420,27 @@ $nav.addEventListener("click", (e) => { if (e.target.closest("a")) setMenu(false
 window.addEventListener("hashchange", () => { setMenu(false); render(); });
 
 // ---------- shared view pieces ----------
+
+let slowTimer = null;
+
+function errorView(msg) {
+  return `
+    <div class="empty" role="alert">
+      <strong>CAN'T LOAD</strong>
+      <p style="max-width:520px;margin:0 auto 18px;line-height:1.6">${msg}</p>
+      <div class="row" style="justify-content:center">
+        <button class="btn solid" data-action="reload">Try again</button>
+        ${state.user ? `<button class="btn" data-action="signout">Sign out</button>` : ""}
+      </div>
+    </div>`;
+}
+
+function slowView() {
+  return `
+    <div class="loading">LOADING<span class="blink">_</span></div>
+    ${errorView(`This is taking way too long. Usually that means the network is blocking the database. <b>School Wi-Fi and school Chromebooks</b> are the usual suspects: try phone data or home Wi-Fi.`)
+      .replace("CAN'T LOAD", "STILL LOADING…")}`;
+}
 
 function loadingView() {
   return `<div class="loading">LOADING<span class="blink">_</span></div>`;
@@ -982,7 +1052,9 @@ async function approveRequest(r, data) {
 }
 
 const actions = {
-  async signout() { await fb.signOut(fb.auth); location.hash = "#/"; },
+  async signout() { if (fb) await fb.signOut(fb.auth); location.hash = "#/"; },
+
+  reload() { location.reload(); },
 
   async google() {
     try { await fb.signInWithPopup(fb.auth, new fb.GoogleAuthProvider()); } catch (e) { if (e.code !== "auth/popup-closed-by-user") fail(e); }
