@@ -8,3 +8,6 @@ Thumbs.db
 
 # personal planning notes
 Planish.txt
+
+# firebase deploy cache
+.firebase/
