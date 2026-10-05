@@ -367,13 +367,29 @@ function emptyBox(title, msg) {
   return `<div class="empty"><strong>${esc(title)}</strong>${msg}</div>`;
 }
 
+// "No. 017" — quotes are numbered in the order they were added.
+let numberCache = { quotes: null, map: new Map() };
+function quoteNo(q) {
+  if (numberCache.quotes !== state.quotes) {
+    const ordered = [...state.quotes].sort((a, b) => millis(a.createdAt) - millis(b.createdAt) || a.id.localeCompare(b.id));
+    numberCache = { quotes: state.quotes, map: new Map(ordered.map((x, i) => [x.id, i + 1])) };
+  }
+  return String(numberCache.map.get(q.id) || 0).padStart(3, "0");
+}
+
+function pageHead(kicker, title, sub) {
+  return `
+    <div class="kicker">${kicker}</div>
+    <h1 class="page-title">${esc(title)}</h1>
+    ${sub ? `<p class="page-sub">${sub}</p>` : ""}`;
+}
+
 function quoteCard(q) {
   const people = (q.people || []).map((p) => `<a href="#/person/${enc(keyOf(p))}">${esc(p)}</a>`).join(" &amp; ");
   const cats = (q.categories || []).map((c) => `<a class="chip" href="#/category/${enc(c)}">${esc(c)}</a>`).join("");
   const bits = [`added by <a href="#/adder/${enc(q.addedBy)}">${esc(q.addedByName || "someone")}</a>`];
   if (q.requestedByName) bits.push(`requested by ${esc(q.requestedByName)}`);
-  if (q.saidOn) bits.push(`said ${esc(fmtSaidOn(q.saidOn))}`);
-  else if (q.createdAt) bits.push(esc(fmtDate(millis(q.createdAt))));
+  const when = q.saidOn ? `said ${fmtSaidOn(q.saidOn)}` : q.createdAt ? fmtDate(millis(q.createdAt)) : "";
 
   const actions = [];
   if (canModify(q)) {
@@ -387,6 +403,7 @@ function quoteCard(q) {
   return `
     <article class="quote ${q.locked ? "locked" : ""}">
       ${q.locked ? `<span class="lock-flag" title="Locked by ${esc(q.lockedByName || "staff")}">LOCKED</span>` : ""}
+      <div class="qhead"><span class="no">No. ${quoteNo(q)}</span><span>${esc(when)}</span></div>
       <div class="text">${esc(q.text)}</div>
       <div class="people">— ${people}</div>
       ${q.context ? `<div class="context">${esc(q.context)}</div>` : ""}
@@ -459,11 +476,81 @@ function indexItem(i, hrefFor) {
   return `<a class="index-item" href="${hrefFor(i)}"><span class="name">${esc(i.name)}</span><span class="c">${i.count}</span></a>`;
 }
 
+// ---------- detail widgets ----------
+
+function tally(quotes, pick) {
+  const m = new Map();
+  for (const q of quotes) {
+    for (const [key, name] of pick(q)) {
+      const e = m.get(key) || { key, name, count: 0 };
+      e.count++;
+      m.set(key, e);
+    }
+  }
+  return [...m.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+const byPeople = (q) => (q.people || []).map((p) => [keyOf(p), p]);
+const byCats = (q) => (q.categories || []).map((c) => [c, c]);
+const byAdder = (q) => [[q.addedBy, q.addedByName || "Unknown"]];
+const personHref = (i) => `#/person/${enc(i.key)}`;
+const catHref = (i) => `#/category/${enc(i.key)}`;
+const adderHref = (i) => `#/adder/${enc(i.key)}`;
+
+function board(title, items, hrefFor, moreHref) {
+  const top = items.slice(0, 5);
+  const max = top[0]?.count || 1;
+  const rows = top.map((i, n) => `
+    <a class="bar-row" href="${hrefFor(i)}">
+      <span class="rank">${String(n + 1).padStart(2, "0")}</span>
+      <span class="label"><span>${esc(i.name)}</span><span class="bar"><i style="width:${Math.max(4, Math.round((i.count / max) * 100))}%"></i></span></span>
+      <span class="n">${i.count}</span>
+    </a>`).join("");
+  return `
+    <div class="board">
+      <h3>${esc(title)} <a href="${moreHref}">ALL &rarr;</a></h3>
+      ${rows || `<p style="font-family:var(--mono);color:var(--dim);font-size:13px;margin:0">Nothing yet.</p>`}
+    </div>`;
+}
+
+function chipRow(label, items, hrefFor) {
+  if (!items.length) return "";
+  return `<div class="row"><span class="l">${esc(label)}</span><span class="chips">${items.slice(0, 8)
+    .map((i) => `<a class="chip" href="${hrefFor(i)}">${esc(i.name)} &middot; ${i.count}</a>`).join("")}</span></div>`;
+}
+
+// Stats + "often quoted with" / "top categories" etc. at the top of person, adder and category pages.
+function detailStrip(quotes, { person, category, adder } = {}) {
+  if (!state.quotesReady || !quotes.length) return "";
+  const times = quotes.map((q) => millis(q.createdAt)).filter(Boolean).sort((a, b) => a - b);
+  const people = tally(quotes, byPeople).filter((p) => p.key !== person);
+  const cats = tally(quotes, byCats).filter((c) => c.key !== category);
+  const adders = tally(quotes, byAdder).filter((a) => a.key !== adder);
+  const share = Math.round((quotes.length / Math.max(1, state.quotes.length)) * 100);
+
+  const cells = [
+    [quotes.length, "Quotes"],
+    [`${share}%`, "Of the book"],
+    [person ? people.length : tally(quotes, byPeople).length, person ? "Quoted alongside" : "People"],
+    [times.length ? fmtDate(times[0]) : "—", "First added", true],
+    [times.length ? fmtDate(times[times.length - 1]) : "—", "Latest", true]
+  ];
+  return `
+    <div class="detail-strip">
+      ${cells.map(([n, l, sm]) => `<div><div class="n ${sm ? "sm" : ""}">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join("")}
+    </div>
+    <div class="detail-chips">
+      ${chipRow(person ? "Often with" : category ? "Most quoted" : "Quotes most", people, personHref)}
+      ${chipRow("Top categories", cats, catHref)}
+      ${adder ? "" : chipRow("Added mostly by", adders, adderHref)}
+    </div>`;
+}
+
 // ---------- views ----------
 
 function setupView() {
   return `
     <div class="setup">
+      <div class="kicker">§ 00 &mdash; <b>Setup</b></div>
       <h1 class="page-title">Almost there</h1>
       <p class="page-sub">The site works — it just isn't connected to a database yet.</p>
       <div class="panel">
@@ -483,6 +570,7 @@ function loginView() {
   const signup = ui.authMode === "signup";
   return `
     <div class="auth-box">
+      <div class="kicker">The Quotebook &mdash; <b>Members only</b></div>
       <h1 class="page-title">${signup ? "Join up" : "Sign in"}</h1>
       <p class="page-sub">The quotebook is members only. New accounts start as enjoyers; an owner can promote you.</p>
       <div class="form">
@@ -508,12 +596,21 @@ function homeView() {
   if (!ui.spotlight && quotes.length) ui.spotlight = quotes[Math.floor(Math.random() * quotes.length)].id;
   const spot = quotes.find((q) => q.id === ui.spotlight);
 
+  const today = new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const masthead = `<div class="masthead"><span>Vol. I</span><span>${esc(today)}</span><span>No. ${quotes.length}</span></div>`;
+
   const hero = !state.quotesReady ? `<section class="hero">${loadingView()}</section>`
     : spot ? `
       <section class="hero">
-        <div class="label">Random quote</div>
+        ${masthead}
+        <div class="label" style="margin-top:18px">Random quote &middot; No. ${quoteNo(spot)}</div>
         <blockquote>“${esc(spot.text)}”</blockquote>
         <div class="by">— ${(spot.people || []).map((p) => `<a href="#/person/${enc(keyOf(p))}">${esc(p)}</a>`).join(" &amp; ")}</div>
+        <div class="credit">${[
+          spot.context ? esc(spot.context) : "",
+          spot.saidOn ? `said ${esc(fmtSaidOn(spot.saidOn))}` : "",
+          `added by ${esc(spot.addedByName || "someone")}`
+        ].filter(Boolean).join(" &middot; ")}</div>
         <div class="actions">
           <button class="btn solid" data-action="another">Another one</button>
           <a class="btn" href="#/all">Read the whole book</a>
@@ -521,7 +618,8 @@ function homeView() {
       </section>`
     : `
       <section class="hero">
-        <div class="label">Fresh book</div>
+        ${masthead}
+        <div class="label" style="margin-top:18px">Fresh book</div>
         <blockquote>The pages are empty.</blockquote>
         <div class="actions"><a class="btn solid" href="#/add">${canAdd() ? "Add the first quote" : "Request the first quote"}</a></div>
       </section>`;
@@ -540,7 +638,24 @@ function homeView() {
 
   const latest = sortQuotes(quotes, "new").slice(0, 4);
 
+  // scrolling ticker of snippets; the track is doubled so the loop is seamless
+  const snippets = [...quotes]
+    .sort((a, b) => hashString(a.id + ui.seed) - hashString(b.id + ui.seed))
+    .slice(0, 12)
+    .map((q) => `<span>“${esc(q.text.length > 70 ? q.text.slice(0, 70).trimEnd() + "…" : q.text)}” — ${esc((q.people || []).join(" & "))}</span>`)
+    .join("");
+  const ticker = snippets ? `<div class="ticker" aria-hidden="true"><div class="ticker-track">${snippets}${snippets}</div></div>` : "";
+
+  const boards = state.quotesReady && quotes.length ? `
+    <h2 class="section-head">The Leaderboards</h2>
+    <div class="boards">
+      ${board("Most quoted", tally(quotes, byPeople), personHref, "#/people")}
+      ${board("Top categories", tally(quotes, byCats), catHref, "#/categories")}
+      ${board("Top scribes", tally(quotes, byAdder), adderHref, "#/adders")}
+    </div>` : "";
+
   return `
+    ${ticker}
     ${hero}
     <div class="stats">
       <div class="stat"><div class="n">${quotes.length}</div><div class="l">Quotes</div></div>
@@ -559,6 +674,7 @@ function homeView() {
           <span class="d">${esc(d)}</span>
         </a>`).join("")}
     </div>
+    ${boards}
     ${latest.length ? `<h2 class="section-head">Latest additions</h2><div class="quotes">${latest.map(quoteCard).join("")}</div>` : ""}`;
 }
 
@@ -569,15 +685,13 @@ function allView(_args, query) {
     history.replaceState(null, "", "#/all");
   }
   return `
-    <h1 class="page-title">The Whole Book</h1>
-    <p class="page-sub">Every quote ever written down.</p>
+    ${pageHead("§ 01 &mdash; <b>The Archive</b>", "The Whole Book", `Every quote ever written down. ${state.quotes.length} and counting.`)}
     ${quoteList("all", state.quotes)}`;
 }
 
 function peopleView() {
   return `
-    <h1 class="page-title">By Person</h1>
-    <p class="page-sub">Everyone who has ever said something quotable.</p>
+    ${pageHead("§ 02 &mdash; <b>Browse</b>", "By Person", "Everyone who has ever said something quotable.")}
     ${indexList(peopleIndex(), (p) => `#/person/${enc(p.key)}`, "people", "people")}`;
 }
 
@@ -586,16 +700,14 @@ function personView([key = ""]) {
   const person = peopleIndex().find((p) => p.key === k);
   const quotes = state.quotes.filter((q) => (q.people || []).some((p) => keyOf(p) === k));
   return `
-    <div class="crumbs"><a href="#/people">People</a> / </div>
-    <h1 class="page-title">${esc(person?.name || key)}</h1>
-    <p class="page-sub">${quotes.length} quote${quotes.length === 1 ? "" : "s"}</p>
+    ${pageHead(`§ 02 &mdash; <a href="#/people">People</a> / <b>Person</b>`, person?.name || key, `${quotes.length} quote${quotes.length === 1 ? "" : "s"} on the record.`)}
+    ${detailStrip(quotes, { person: k })}
     ${quoteList("person:" + k, quotes, "Nobody has quoted them yet.")}`;
 }
 
 function addersView() {
   return `
-    <h1 class="page-title">By Who Added</h1>
-    <p class="page-sub">The people writing it all down.</p>
+    ${pageHead("§ 03 &mdash; <b>Browse</b>", "By Who Added", "The scribes. The people writing it all down.")}
     ${indexList(addersIndex(), (a) => `#/adder/${enc(a.key)}`, "adders", "adders")}`;
 }
 
@@ -603,25 +715,22 @@ function adderView([uid = ""]) {
   const adder = addersIndex().find((a) => a.key === uid);
   const quotes = state.quotes.filter((q) => q.addedBy === uid);
   return `
-    <div class="crumbs"><a href="#/adders">Added by</a> / </div>
-    <h1 class="page-title">${esc(adder?.name || "Unknown")}</h1>
-    <p class="page-sub">Added ${quotes.length} quote${quotes.length === 1 ? "" : "s"}</p>
+    ${pageHead(`§ 03 &mdash; <a href="#/adders">Added by</a> / <b>Scribe</b>`, adder?.name || "Unknown", `Wrote down ${quotes.length} quote${quotes.length === 1 ? "" : "s"}.`)}
+    ${detailStrip(quotes, { adder: uid })}
     ${quoteList("adder:" + uid, quotes, "They haven't added anything.")}`;
 }
 
 function categoriesView() {
   return `
-    <h1 class="page-title">By Category</h1>
-    <p class="page-sub">Every quote can have as many categories as you want.</p>
+    ${pageHead("§ 04 &mdash; <b>Browse</b>", "By Category", "Sorted by vibe. A quote can have as many categories as you want.")}
     ${indexList(categoriesIndex(), (c) => `#/category/${enc(c.key)}`, "categories", "categories")}`;
 }
 
 function categoryView([cat = ""]) {
   const quotes = state.quotes.filter((q) => (q.categories || []).includes(cat));
   return `
-    <div class="crumbs"><a href="#/categories">Categories</a> / </div>
-    <h1 class="page-title">${esc(cat)}</h1>
-    <p class="page-sub">${quotes.length} quote${quotes.length === 1 ? "" : "s"}</p>
+    ${pageHead(`§ 04 &mdash; <a href="#/categories">Categories</a> / <b>Category</b>`, cat, `${quotes.length} quote${quotes.length === 1 ? "" : "s"} filed here.`)}
+    ${detailStrip(quotes, { category: cat })}
     ${quoteList("category:" + cat, quotes, "Nothing in this category.")}`;
 }
 
@@ -675,6 +784,7 @@ function readQuoteForm(form) {
 function addView() {
   if (canAdd()) {
     return `
+      <div class="kicker">§ 05 &mdash; <b>Contribute</b> &middot; this will be No. ${String(state.quotes.length + 1).padStart(3, "0")}</div>
       <h1 class="page-title">Add a Quote</h1>
       <p class="page-sub">It'll show up as added by ${esc(state.profile.displayName)}.</p>
       <form class="form" data-form="add">
@@ -683,6 +793,7 @@ function addView() {
       </form>`;
   }
   return `
+    <div class="kicker">§ 05 &mdash; <b>Contribute</b></div>
     <h1 class="page-title">Request a Quote</h1>
     <p class="page-sub">Enjoyers can't add directly — send it in and an owner or admin will review it.</p>
     <form class="form" data-form="request">
@@ -725,6 +836,7 @@ function requestsView() {
     const pending = sorted.filter((r) => r.status === "pending");
     const done = sorted.filter((r) => r.status !== "pending").slice(0, 30);
     return `
+      <div class="kicker">§ 06 &mdash; <b>The Queue</b></div>
       <h1 class="page-title">Requests</h1>
       <p class="page-sub">Quotes enjoyers want added. Approving puts it in the book.</p>
       <h2 class="section-head">Waiting (${pending.length})</h2>
@@ -732,6 +844,7 @@ function requestsView() {
       ${done.length ? `<h2 class="section-head">Recently handled</h2>${done.map((r) => requestCard(r, true)).join("")}` : ""}`;
   }
   return `
+    <div class="kicker">§ 06 &mdash; <b>The Queue</b></div>
     <h1 class="page-title">My Requests</h1>
     <p class="page-sub">Quotes you've sent in, and what happened to them.</p>
     <div class="row" style="margin-bottom:20px"><a class="btn solid" href="#/add">+ New request</a></div>
@@ -758,6 +871,7 @@ function controlView() {
     </tr>`).join("");
 
   return `
+    <div class="kicker">§ 07 &mdash; <b>Staff only</b></div>
     <h1 class="page-title">Control Room</h1>
     <p class="page-sub">${isOwner() ? "You run this place." : "Admins can look. Only owners can change roles."}</p>
 

@@ -1,11 +1,12 @@
-/* ============ THE QUOTEBOOK — black & white & very tuff ============ */
+/* ============ THE QUOTEBOOK â€” black & white & very tuff ============ */
 
 :root {
-  --bg: #000;
-  --fg: #fff;
-  --dim: #8a8a8a;
-  --line: #fff;
-  --soft: #1a1a1a;
+  --bg: #0e0e0e;      /* almost black */
+  --raise: #141414;   /* cards sit a hair above the page */
+  --fg: #ebebeb;      /* almost white */
+  --dim: #8c8c8c;
+  --line: #ebebeb;
+  --soft: #232323;
   --display: "Anton", "Impact", sans-serif;
   --body: "Inter", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
@@ -15,6 +16,7 @@
 * { box-sizing: border-box; }
 
 html, body { margin: 0; }
+html { overflow-x: clip; }
 
 body {
   background: var(--bg);
@@ -28,6 +30,17 @@ body {
 }
 
 ::selection { background: var(--fg); color: var(--bg); }
+
+/* film grain over everything â€” subtle, just enough texture */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  opacity: .05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .6 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
 
 a { color: inherit; }
 
@@ -143,7 +156,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-family: Georgia, serif;
   font-size: 420px;
   line-height: 1;
-  top: -60px;
+  top: 10px;
   right: -10px;
   color: var(--soft);
   pointer-events: none;
@@ -252,12 +265,29 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .quotes { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 18px; }
 .quote {
   border: var(--border);
-  padding: 22px 22px 16px;
+  background: var(--raise);
+  padding: 18px 22px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   position: relative;
+  transition: transform .08s, box-shadow .08s;
 }
+.quote:hover { transform: translate(-3px, -3px); box-shadow: 6px 6px 0 var(--fg); }
+.quote .qhead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  color: var(--dim);
+  text-transform: uppercase;
+  border-bottom: 1px dashed var(--soft);
+  padding-bottom: 8px;
+}
+.quote .qhead .no { color: var(--fg); font-weight: 600; }
+.request .quote:hover { transform: none; box-shadow: none; }
 .quote .text {
   font-size: 21px;
   font-weight: 700;
@@ -286,7 +316,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .quote .meta a { color: var(--fg); }
 .quote .actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.quote.locked { box-shadow: 6px 6px 0 var(--fg); }
+.quote.locked { outline: 1px solid var(--fg); outline-offset: 4px; }
 .lock-flag {
   position: absolute;
   top: -3px;
@@ -393,7 +423,7 @@ td select { background: var(--bg); border: 2px solid var(--fg); padding: 4px 6px
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, .85);
+  background: rgba(14, 14, 14, .88);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -419,6 +449,115 @@ td select { background: var(--bg); border: 2px solid var(--fg); padding: 4px 6px
 .toast.err { background: var(--bg); color: var(--fg); }
 @keyframes slide { from { transform: translateY(10px); opacity: 0; } }
 
+/* ---------- page heads ---------- */
+
+.kicker {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.kicker::after { content: ""; flex: 1; border-top: 1px solid var(--soft); }
+.kicker b { color: var(--fg); font-weight: 600; }
+
+.page-sub { border-bottom: 1px solid var(--soft); padding-bottom: 18px; }
+
+/* ---------- ticker ---------- */
+
+.ticker {
+  border-top: var(--border);
+  border-bottom: var(--border);
+  overflow: hidden;
+  white-space: nowrap;
+  margin: -32px calc(50% - 50vw) 28px; /* full-bleed */
+  padding: 9px 0;
+  background: var(--fg);
+  color: var(--bg);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.ticker-track { display: inline-block; animation: ticker 60s linear infinite; }
+.ticker-track span { padding: 0 18px; }
+.ticker-track span::after { content: "\2726"; padding-left: 36px; }
+.ticker:hover .ticker-track { animation-play-state: paused; }
+@keyframes ticker { to { transform: translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) { .ticker-track { animation: none; } }
+
+/* ---------- hero masthead ---------- */
+
+.masthead {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--soft);
+  padding-bottom: 10px;
+  position: relative;
+  color: var(--dim);
+}
+.hero .credit { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-top: 6px; position: relative; }
+
+/* ---------- boards (most quoted etc.) ---------- */
+
+.boards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+.board { border: var(--border); background: var(--raise); padding: 18px 20px; }
+.board h3 {
+  font-family: var(--display);
+  font-weight: normal;
+  font-size: 22px;
+  text-transform: uppercase;
+  margin: 0 0 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.board h3 a { font-family: var(--mono); font-size: 11px; letter-spacing: 1px; }
+.bar-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 40px;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  text-decoration: none;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.bar-row .rank { color: var(--dim); font-size: 11px; }
+.bar-row .label { display: grid; gap: 4px; min-width: 0; }
+.bar-row .label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-row .bar { height: 6px; background: var(--soft); }
+.bar-row .bar i { display: block; height: 100%; background: var(--fg); }
+.bar-row .n { text-align: right; }
+a.bar-row:hover .label span { background: var(--fg); color: var(--bg); }
+
+/* ---------- detail strip on person / adder / category pages ---------- */
+
+.detail-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border: var(--border); margin-bottom: 18px; }
+.detail-strip > div { padding: 14px 16px; border-right: 1px solid var(--soft); }
+.detail-strip > div:last-child { border-right: 0; }
+.detail-strip .n { font-family: var(--display); font-size: 30px; line-height: 1.1; }
+.detail-strip .n.sm { font-size: 20px; }
+.detail-strip .l { font-family: var(--mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); }
+.detail-chips { display: grid; gap: 10px; margin-bottom: 28px; }
+.detail-chips .row { gap: 10px; }
+.detail-chips .l { font-family: var(--mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); min-width: 120px; }
+
+/* ---------- footer ---------- */
+
+.footer .mark { font-family: var(--display); font-size: 16px; letter-spacing: 1px; color: var(--fg); }
+
 /* ---------- small screens ---------- */
 
 @media (max-width: 700px) {
@@ -426,10 +565,16 @@ td select { background: var(--bg); border: 2px solid var(--fg); padding: 4px 6px
   .nav { order: 3; flex-basis: 100%; }
   .who { margin-left: auto; }
   .app { padding: 24px 16px 48px; }
+  .ticker { margin-top: -24px; margin-bottom: 24px; }
   .hero { padding: 28px 20px; }
-  .stats { grid-template-columns: 1fr; }
-  .stat { border-right: 0; border-bottom: var(--border); }
-  .stat:last-child { border-bottom: 0; }
+  .stat { padding: 12px; }
+  .stat .n { font-size: 34px; }
+  .stat .l { font-size: 10px; }
+  .tiles { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .tile { min-height: 120px; padding: 14px; }
+  .tile .t { font-size: 22px; }
+  .tile .d { display: none; }
+  .hero::before { font-size: 260px; top: 30px; }
   .quotes { grid-template-columns: 1fr; }
   .toasts { left: 16px; right: 16px; }
 }
