@@ -1,0 +1,10 @@
+# backups have everyone's emails in them — keep them on the SSD, not on GitHub
+quotebook-backup-*.json
+
+node_modules/
+.DS_Store
+Thumbs.db
+.vscode/
+
+# personal planning notes
+Planish.txt

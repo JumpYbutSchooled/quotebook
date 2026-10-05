@@ -1,0 +1,113 @@
+rules_version = '2';
+
+// Roles (stored in users/{uid}.role):
+//   owner       – everything. Can lock quotes so nobody else can delete them.
+//   admin       – add, edit/delete own + contributors' quotes, can't touch owners'/admins' work. Can lock.
+//   contributor – add, edit/delete only their own quotes (if not locked).
+//   enjoyer     – read only, can send requests for additions.
+// Everyone who signs up starts as "enjoyer". Owners promote people from the Control Room page.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function userPath(uid) { return /databases/$(database)/documents/users/$(uid); }
+    function hasProfile() { return signedIn() && exists(userPath(request.auth.uid)); }
+    function myRole() { return get(userPath(request.auth.uid)).data.role; }
+
+    function isOwner()  { return hasProfile() && myRole() == 'owner'; }
+    function isAdmin()  { return hasProfile() && myRole() == 'admin'; }
+    function isStaff()  { return hasProfile() && myRole() in ['owner', 'admin']; }
+    function canAdd()   { return hasProfile() && myRole() in ['owner', 'admin', 'contributor']; }
+    function isMember() { return hasProfile(); }
+
+    // True if uid is NOT an owner/admin (i.e. an admin is allowed to manage their stuff).
+    function isJunior(uid) {
+      return !exists(userPath(uid)) || get(userPath(uid)).data.role in ['contributor', 'enjoyer'];
+    }
+    function isOwnerUid(uid) {
+      return exists(userPath(uid)) && get(userPath(uid)).data.role == 'owner';
+    }
+
+    function validQuote(q) {
+      return q.text is string && q.text.size() > 0 && q.text.size() <= 3000
+        && q.people is list && q.people.size() > 0 && q.people.size() <= 12
+        && q.categories is list && q.categories.size() <= 20
+        && q.addedBy is string
+        && q.locked is bool;
+    }
+
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function contentKeys() { return ['text', 'people', 'categories', 'context', 'saidOn', 'updatedAt']; }
+    function lockKeys() { return ['locked', 'lockedBy', 'lockedByName']; }
+
+    // ---------- users ----------
+    match /users/{uid} {
+      allow read: if isStaff() || (signedIn() && request.auth.uid == uid);
+
+      // You can only create your own profile, and only as an enjoyer.
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.role == 'enjoyer'
+        && request.resource.data.keys().hasOnly(['displayName', 'email', 'role', 'createdAt']);
+
+      // Owners can change anyone's role; everyone can rename themselves.
+      allow update: if isOwner()
+        || (signedIn() && request.auth.uid == uid && changed().hasOnly(['displayName']));
+
+      allow delete: if isOwner();
+    }
+
+    // ---------- quotes ----------
+    match /quotes/{quoteId} {
+      allow read: if isMember();
+
+      allow create: if validQuote(request.resource.data) && (
+        isOwner()   // owners can also restore backups with any author
+        || (canAdd()
+            && request.resource.data.addedBy == request.auth.uid
+            && (request.resource.data.locked == false || isStaff()))
+      );
+
+      // Owners can change anything. Everyone else can't change who added it.
+      allow update: if validQuote(request.resource.data) && (
+        isOwner()
+        || (request.resource.data.addedBy == resource.data.addedBy && (adminLockChange() || contentEdit()))
+      );
+
+      // locking / unlocking (admins can't undo an owner's lock)
+      function adminLockChange() {
+        return isAdmin() && changed().hasOnly(lockKeys())
+          && ((request.resource.data.locked == true && request.resource.data.lockedBy == request.auth.uid)
+              || (request.resource.data.locked == false && !isOwnerUid(resource.data.get('lockedBy', 'nobody'))));
+      }
+
+      // editing the actual quote (locked quotes can only be edited by owners)
+      function contentEdit() {
+        return resource.data.locked == false && changed().hasOnly(contentKeys()) && (
+          (canAdd() && resource.data.addedBy == request.auth.uid)
+          || (isAdmin() && isJunior(resource.data.addedBy))
+        );
+      }
+
+      allow delete: if isOwner()
+        || (resource.data.locked == false && (
+              (canAdd() && resource.data.addedBy == request.auth.uid)
+              || (isAdmin() && isJunior(resource.data.addedBy))
+           ));
+    }
+
+    // ---------- requests for additions ----------
+    match /requests/{reqId} {
+      allow read: if isStaff() || (signedIn() && resource.data.requestedBy == request.auth.uid);
+
+      allow create: if isMember()
+        && request.resource.data.requestedBy == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.text is string && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 3000;
+
+      allow update: if isStaff();
+      allow delete: if isStaff() || (signedIn() && resource.data.requestedBy == request.auth.uid);
+    }
+  }
+}
