@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e0e0e">
   <title>The Quotebook</title>
   <meta name="description" content="Things people actually said.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='black'/><text x='50' y='88' font-size='110' text-anchor='middle' fill='white' font-family='Georgia,serif'>&#8220;</text></svg>">
@@ -14,6 +15,9 @@
 <body>
   <header class="topbar">
     <a href="#/" class="brand">THE<span>QUOTEBOOK</span></a>
+    <button class="menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="nav" hidden>
+      <span class="menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span class="menu-label">MENU</span>
+    </button>
     <nav class="nav" id="nav"></nav>
     <div class="who" id="who"></div>
   </header>

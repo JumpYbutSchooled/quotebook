@@ -325,8 +325,11 @@ function renderChrome() {
   if (!state.user || !state.profile) {
     $nav.innerHTML = "";
     $who.innerHTML = "";
+    $menuBtn.hidden = true;
+    setMenu(false);
     return;
   }
+  $menuBtn.hidden = false;
   const pending = state.requests.filter((r) => r.status === "pending").length;
   const links = [
     ["", "Home"],
@@ -345,13 +348,27 @@ function renderChrome() {
     .map(([k, label]) => `<a href="#/${k}" class="${(activeFor[here] || here) === k ? "active" : ""}">${esc(label)}</a>`)
     .join("");
 
-  $who.innerHTML = `
+  const whoHtml = `
     <button class="linkish" data-action="rename" title="Change your display name">${esc(state.profile.displayName)}</button>
     <span class="role-badge ${esc(myRole())}">${esc(myRole())}</span>
     <button class="btn small" data-action="signout">Sign out</button>`;
+  $who.innerHTML = whoHtml;
+  // on phones the name / sign out live at the bottom of the slide-down menu
+  $nav.insertAdjacentHTML("beforeend", `<div class="nav-who">${whoHtml}</div>`);
 }
 
-window.addEventListener("hashchange", () => render());
+// ---------- phone menu ----------
+
+const $menuBtn = document.getElementById("menu-btn");
+function setMenu(open) {
+  document.body.classList.toggle("nav-open", open);
+  $menuBtn.setAttribute("aria-expanded", String(open));
+  $menuBtn.querySelector(".menu-label").textContent = open ? "CLOSE" : "MENU";
+}
+$menuBtn.addEventListener("click", () => setMenu(!document.body.classList.contains("nav-open")));
+$nav.addEventListener("click", (e) => { if (e.target.closest("a")) setMenu(false); });
+
+window.addEventListener("hashchange", () => { setMenu(false); render(); });
 
 // ---------- shared view pieces ----------
 
@@ -859,15 +876,15 @@ function controlView() {
 
   const rows = users.map((u) => `
     <tr>
-      <td><strong>${esc(u.displayName)}</strong>${u.id === state.user.uid ? " (you)" : ""}</td>
-      <td>${esc(u.email)}</td>
-      <td>${isOwner()
+      <td data-label="Name"><span><strong>${esc(u.displayName)}</strong>${u.id === state.user.uid ? " (you)" : ""}</span></td>
+      <td data-label="Email">${esc(u.email)}</td>
+      <td data-label="Role">${isOwner()
         ? `<select data-bind="role" data-uid="${esc(u.id)}" aria-label="Role for ${esc(u.displayName)}">
             ${ROLES.map((r) => `<option value="${r}" ${u.role === r ? "selected" : ""}>${r}</option>`).join("")}
            </select>`
         : `<span class="role-badge ${esc(u.role)}">${esc(u.role)}</span>`}</td>
-      <td>${counts[u.id] || 0}</td>
-      <td>${esc(fmtDate(millis(u.createdAt)))}</td>
+      <td data-label="Added">${counts[u.id] || 0}</td>
+      <td data-label="Joined">${esc(fmtDate(millis(u.createdAt)))}</td>
     </tr>`).join("");
 
   return `
@@ -1247,6 +1264,7 @@ document.addEventListener("change", async (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") setMenu(false);
   if (e.key === "Escape" && $modal.innerHTML && !$modal.querySelector("[data-confirm]")) closeModal();
 });
 
