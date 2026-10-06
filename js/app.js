@@ -1188,10 +1188,13 @@ async function restoreFromFile(file) {
   if (!(await confirmBox("Import these quotes?", `This writes ${quotes.length} quotes into the book. Importing the same file twice won't make duplicates; it just overwrites them.`, "Import"))) return;
 
   const toTs = (v) => (typeof v === "string" && !isNaN(Date.parse(v)) ? fb.Timestamp.fromMillis(Date.parse(v)) : v);
+  // Written as separate saves, a few at a time: Firestore caps one request at 20 rule lookups,
+  // and every quote needs 2 (the owner check), so one big batch gets rejected as "permission denied".
+  let done = 0;
   try {
-    for (let i = 0; i < quotes.length; i += 400) {
-      const batch = fb.writeBatch(fb.db);
-      for (const { id, ...q } of quotes.slice(i, i + 400)) {
+    for (let i = 0; i < quotes.length; i += 10) {
+      const writes = [];
+      for (const { id, ...q } of quotes.slice(i, i + 10)) {
         const clean = {
           context: "",
           saidOn: "",
@@ -1205,12 +1208,16 @@ async function restoreFromFile(file) {
         };
         for (const k of ["createdAt", "updatedAt"]) if (clean[k]) clean[k] = toTs(clean[k]);
         if (!clean.createdAt) clean.createdAt = fb.serverTimestamp();
-        batch.set(id ? fb.doc(fb.db, "quotes", String(id)) : fb.doc(fb.collection(fb.db, "quotes")), clean);
+        writes.push(fb.setDoc(id ? fb.doc(fb.db, "quotes", String(id)) : fb.doc(fb.collection(fb.db, "quotes")), clean));
       }
-      await batch.commit();
+      await Promise.all(writes);
+      done += writes.length;
     }
     toast(`Imported ${quotes.length} quotes.`);
-  } catch (e) { fail(e); }
+  } catch (e) {
+    fail(e);
+    if (done) toast(`${done} of ${quotes.length} got in before the error. Importing again is safe.`, true);
+  }
 }
 
 const forms = {
