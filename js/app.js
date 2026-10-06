@@ -983,8 +983,8 @@ function controlView() {
         <button class="btn solid" data-action="backup">Download backup</button>
       </div>
       <div class="panel">
-        <h3>Restore quotes from backup</h3>
-        <p>Puts quotes from a backup file back into the book. Quotes with the same ID get overwritten; nothing gets deleted.</p>
+        <h3>Import / restore quotes</h3>
+        <p>Pick a backup or import file (.json) to add its quotes to the book. Quotes with the same ID get overwritten; nothing gets deleted.</p>
         <input type="file" id="restore-file" accept="application/json,.json" data-bind="restore">
       </div>` : ""}`;
 }
@@ -1185,20 +1185,31 @@ async function restoreFromFile(file) {
   try { data = JSON.parse(await file.text()); } catch { return toast("That file isn't valid JSON.", true); }
   const quotes = Array.isArray(data?.quotes) ? data.quotes : null;
   if (!quotes) return toast("No quotes found in that file.", true);
-  if (!(await confirmBox("Restore backup?", `This writes ${quotes.length} quotes into the book (same IDs get overwritten).`, "Restore"))) return;
+  if (!(await confirmBox("Import these quotes?", `This writes ${quotes.length} quotes into the book. Importing the same file twice won't make duplicates; it just overwrites them.`, "Import"))) return;
 
   const toTs = (v) => (typeof v === "string" && !isNaN(Date.parse(v)) ? fb.Timestamp.fromMillis(Date.parse(v)) : v);
   try {
     for (let i = 0; i < quotes.length; i += 400) {
       const batch = fb.writeBatch(fb.db);
       for (const { id, ...q } of quotes.slice(i, i + 400)) {
-        const clean = { ...q, locked: !!q.locked, categories: q.categories || [], people: q.people || [] };
+        const clean = {
+          context: "",
+          saidOn: "",
+          ...q,
+          locked: !!q.locked,
+          categories: q.categories || [],
+          people: q.people || [],
+          // import files written by hand don't say who added them, so credit whoever is importing
+          addedBy: q.addedBy || state.user.uid,
+          addedByName: q.addedByName || state.profile.displayName
+        };
         for (const k of ["createdAt", "updatedAt"]) if (clean[k]) clean[k] = toTs(clean[k]);
+        if (!clean.createdAt) clean.createdAt = fb.serverTimestamp();
         batch.set(id ? fb.doc(fb.db, "quotes", String(id)) : fb.doc(fb.collection(fb.db, "quotes")), clean);
       }
       await batch.commit();
     }
-    toast(`Restored ${quotes.length} quotes.`);
+    toast(`Imported ${quotes.length} quotes.`);
   } catch (e) { fail(e); }
 }
 
