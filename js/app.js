@@ -4,7 +4,7 @@
 
 import { firebaseConfig } from "./firebase-config.js";
 
-const FIREBASE_VERSION = "10.12.2";
+// Firebase is self-hosted in js/vendor/firebase.js (rebuild with `npm run build:firebase`).
 const ROLES = ["owner", "admin", "contributor", "enjoyer"];
 const ROLE_INFO = {
   owner: "Everything. Can lock quotes so nobody else can delete them.",
@@ -36,6 +36,24 @@ const $nav = document.getElementById("nav");
 const $who = document.getElementById("who");
 const $modal = document.getElementById("modal-root");
 const $toasts = document.getElementById("toast-root");
+
+// ---------- startup log (shown on error screens so problems can be diagnosed from a screenshot) ----------
+
+const diag = [];
+const bootTime = performance.now();
+function step(msg) {
+  diag.push(`${((performance.now() - bootTime) / 1000).toFixed(1)}s  ${msg}`);
+  console.info("[quotebook]", msg);
+}
+step("app started");
+
+function diagBlock() {
+  return `
+    <details style="margin-top:18px;text-align:left">
+      <summary style="cursor:pointer;font-size:12px">Technical log (screenshot this for help)</summary>
+      <pre style="white-space:pre-wrap;font-size:11px;line-height:1.5;margin:10px 0 0">${esc(diag.join("\n"))}\n\n${esc(navigator.userAgent)}</pre>
+    </details>`;
+}
 
 // ---------- helpers ----------
 
@@ -158,27 +176,26 @@ function sortQuotes(list, sort) {
 // ---------- firebase ----------
 
 async function initFirebase() {
-  const base = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}`;
-  const [appMod, authMod, fsMod] = await Promise.all([
-    import(`${base}/firebase-app.js`),
-    import(`${base}/firebase-auth.js`),
-    import(`${base}/firebase-firestore.js`)
-  ]);
-  const app = appMod.initializeApp(firebaseConfig);
+  step("loading database code");
+  const sdk = await import("./vendor/firebase.js");
+  step("database code loaded");
+  const app = sdk.initializeApp(firebaseConfig);
   let db;
   try {
     // Memory cache only: the on-disk cache (IndexedDB) hangs on some iPhones/Safari setups,
     // and a friend-group quotebook is nowhere near the free read limit anyway.
     // If this browser couldn't connect before, use plain long-polling (works through
     // iCloud Private Relay, content blockers and picky networks).
-    db = fsMod.initializeFirestore(app, forceLongPolling()
-      ? { localCache: fsMod.memoryLocalCache(), experimentalForceLongPolling: true }
-      : { localCache: fsMod.memoryLocalCache(), experimentalAutoDetectLongPolling: true });
-  } catch {
-    db = fsMod.getFirestore(app);
+    step(forceLongPolling() ? "connection: long-polling" : "connection: auto");
+    db = sdk.initializeFirestore(app, forceLongPolling()
+      ? { localCache: sdk.memoryLocalCache(), experimentalForceLongPolling: true }
+      : { localCache: sdk.memoryLocalCache(), experimentalAutoDetectLongPolling: true });
+  } catch (e) {
+    step("initializeFirestore failed: " + e.message);
+    db = sdk.getFirestore(app);
   }
-  const auth = authMod.getAuth(app);
-  fb = { ...authMod, ...fsMod, app, db, auth };
+  const auth = sdk.getAuth(app);
+  fb = { ...sdk, app, db, auth };
 
   fb.onAuthStateChanged(auth, async (user) => {
     stopListeners();
@@ -191,6 +208,7 @@ async function initFirebase() {
     state.requests = [];
     state.loadError = null;
     state.dataError = null;
+    step(user ? "signed in" : "signed out");
     if (!user) {
       state.authReady = true;
       render();
@@ -198,8 +216,10 @@ async function initFirebase() {
     }
     try {
       await withTimeout(ensureProfile(user), 15000);
+      step("profile ready");
     } catch (e) {
       console.error(e);
+      step(`profile failed: ${e.code || ""} ${e.message}`);
       // Couldn't reach the database: retry once in long-polling mode before showing an error.
       if (isConnectionError(e) && !forceLongPolling()) {
         setForceLongPolling();
@@ -270,8 +290,10 @@ function describeError(e) {
 
 async function ensureProfile(user) {
   const ref = fb.doc(fb.db, "users", user.uid);
+  step("checking profile");
   const snap = await fb.getDoc(ref);
   if (snap.exists()) return;
+  step("creating profile");
   const displayName = (pendingName || user.displayName || (user.email || "anon").split("@")[0]).slice(0, 40);
   await fb.setDoc(ref, { displayName, email: user.email || "", role: "enjoyer", createdAt: fb.serverTimestamp() });
 }
@@ -285,6 +307,7 @@ function startDataListeners() {
   const opts = { serverTimestamps: "estimate" };
 
   dataUnsubs.push(fb.onSnapshot(fb.collection(db, "quotes"), (snap) => {
+    if (!state.quotesReady) step(`quotes loaded (${snap.size})`);
     state.quotes = snap.docs.map((d) => ({ id: d.id, ...d.data(opts) }));
     state.quotesReady = true;
     state.dataError = null;
@@ -455,6 +478,7 @@ function errorView(msg) {
         <button class="btn solid" data-action="reload">Try again</button>
         ${state.user ? `<button class="btn" data-action="signout">Sign out</button>` : ""}
       </div>
+      ${diagBlock()}
     </div>`;
 }
 
@@ -1436,7 +1460,8 @@ document.addEventListener("keydown", (e) => {
 if (configured) {
   initFirebase().catch((e) => {
     console.error(e);
-    $app.innerHTML = emptyBox("CAN'T CONNECT", `Couldn't load Firebase: ${esc(e.message)}`);
+    step("startup failed: " + e.message);
+    $app.innerHTML = errorView(`Couldn't start the database connection.<span style="display:block;margin-top:8px;font-size:11px;opacity:.7">${esc(e.message)}</span>`);
   });
 } else {
   state.authReady = true;

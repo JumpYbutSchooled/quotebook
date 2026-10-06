@@ -1,0 +1,12 @@
+{
+  "name": "quotebook",
+  "private": true,
+  "description": "Build tools only. The site itself has no build step; this just refreshes js/vendor/firebase.js.",
+  "scripts": {
+    "build:firebase": "esbuild tools/firebase-entry.js --bundle --format=esm --minify --target=safari15,chrome100,firefox100 --legal-comments=none --outfile=js/vendor/firebase.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "firebase": "12.19.0"
+  }
+}
