@@ -167,12 +167,13 @@ async function initFirebase() {
   const app = appMod.initializeApp(firebaseConfig);
   let db;
   try {
-    // Local cache = fewer reads (stays inside the free tier) and the site still shows quotes offline.
-    // Long-polling auto-detect helps on school / work networks that block streaming connections.
-    db = fsMod.initializeFirestore(app, {
-      localCache: fsMod.persistentLocalCache({ tabManager: fsMod.persistentMultipleTabManager() }),
-      experimentalAutoDetectLongPolling: true
-    });
+    // Memory cache only: the on-disk cache (IndexedDB) hangs on some iPhones/Safari setups,
+    // and a friend-group quotebook is nowhere near the free read limit anyway.
+    // If this browser couldn't connect before, use plain long-polling (works through
+    // iCloud Private Relay, content blockers and picky networks).
+    db = fsMod.initializeFirestore(app, forceLongPolling()
+      ? { localCache: fsMod.memoryLocalCache(), experimentalForceLongPolling: true }
+      : { localCache: fsMod.memoryLocalCache(), experimentalAutoDetectLongPolling: true });
   } catch {
     db = fsMod.getFirestore(app);
   }
@@ -196,9 +197,15 @@ async function initFirebase() {
       return;
     }
     try {
-      await withTimeout(ensureProfile(user), 20000);
+      await withTimeout(ensureProfile(user), 15000);
     } catch (e) {
       console.error(e);
+      // Couldn't reach the database: retry once in long-polling mode before showing an error.
+      if (isConnectionError(e) && !forceLongPolling()) {
+        setForceLongPolling();
+        location.reload();
+        return;
+      }
       state.loadError = describeError(e);
       state.authReady = true;
       render();
@@ -232,17 +239,33 @@ function withTimeout(promise, ms) {
   ]);
 }
 
+const LP_KEY = "qb-force-long-polling";
+function forceLongPolling() { try { return localStorage.getItem(LP_KEY) === "1"; } catch { return false; } }
+function setForceLongPolling() { try { localStorage.setItem(LP_KEY, "1"); } catch { /* private mode */ } }
+
+function isConnectionError(e) {
+  const code = String(e?.code || "");
+  return ["unavailable", "timeout", "deadline-exceeded"].includes(code) || /offline|timed out|network|fetch/i.test(String(e?.message || ""));
+}
+
 // Turn Firebase errors into something a person can act on.
 function describeError(e) {
   const code = String(e?.code || "");
   const msg = String(e?.message || e || "");
+  const details = `<span style="display:block;margin-top:12px;font-size:11px;opacity:.7">Error details: ${esc(code || "none")}: ${esc(msg.slice(0, 160))}</span>`;
   if (code === "permission-denied" || msg.includes("permission")) {
-    return "The database refused (permission denied). An owner needs to publish the latest security rules: run <code>npx firebase-tools deploy</code>.";
+    return "The database refused (permission denied). An owner needs to publish the latest security rules: run <code>npx firebase-tools deploy</code>." + details;
   }
-  if (["unavailable", "timeout", "deadline-exceeded"].includes(code) || /offline|timed out|network/i.test(msg)) {
-    return "Can't reach the database. If you're on <b>school Wi-Fi or a school Chromebook</b>, it's probably blocking it. Try phone data or home Wi-Fi.";
+  if (isConnectionError(e)) {
+    return `This browser can't reach the database. Things that cause it:
+      <span style="display:block;text-align:left;margin:12px auto 0;max-width:420px">
+        &bull; An ad blocker or content-blocker app: turn it off for this site<br>
+        &bull; iPhone <b>iCloud Private Relay</b>: Settings &rarr; [your name] &rarr; iCloud &rarr; Private Relay &rarr; off (or tap the <b>aA</b> icon in Safari &rarr; Show IP Address)<br>
+        &bull; iPhone <b>Lockdown Mode</b>, VPNs, or school/work networks<br>
+        &bull; Or just try a different browser, like Chrome
+      </span>` + details;
   }
-  return `Something went wrong: ${esc(code || msg)}`;
+  return `Something went wrong.` + details;
 }
 
 async function ensureProfile(user) {
@@ -344,7 +367,7 @@ function render(reason) {
 
   // if a full-page loading screen hangs around, offer help instead of spinning forever
   const stuck = configured && html.startsWith('<div class="loading">');
-  if (stuck && !slowTimer && !ui.slow) slowTimer = setTimeout(() => { ui.slow = true; slowTimer = null; render(); }, 12000);
+  if (stuck && !slowTimer && !ui.slow) slowTimer = setTimeout(() => { ui.slow = true; slowTimer = null; render(); }, 25000);
   if (!stuck) { clearTimeout(slowTimer); slowTimer = null; ui.slow = false; }
   if (stuck && ui.slow) html = slowView();
 
@@ -438,7 +461,7 @@ function errorView(msg) {
 function slowView() {
   return `
     <div class="loading">LOADING<span class="blink">_</span></div>
-    ${errorView(`This is taking way too long. Usually that means the network is blocking the database. <b>School Wi-Fi and school Chromebooks</b> are the usual suspects: try phone data or home Wi-Fi.`)
+    ${errorView(`This is taking way too long. Something between this browser and the database is blocking it: an ad blocker, iCloud Private Relay, a VPN, or a school network. Try turning those off, or use a different browser.`)
       .replace("CAN'T LOAD", "STILL LOADING…")}`;
 }
 
@@ -677,11 +700,62 @@ function loginView() {
     </div>`;
 }
 
+// ---------- random quote "deck" ----------
+// Every quote shows once (in random order) before anything repeats, then the deck reshuffles.
+// The deck is remembered per device, so reloading keeps going instead of starting over.
+
+const DECK_KEY = "qb-deck";
+function loadDeck() {
+  try {
+    const d = JSON.parse(localStorage.getItem(DECK_KEY));
+    if (d && Array.isArray(d.order) && Number.isInteger(d.pos)) return d;
+  } catch { /* no storage */ }
+  return { order: [], pos: 0 };
+}
+function saveDeck(d) { try { localStorage.setItem(DECK_KEY, JSON.stringify(d)); } catch { /* private mode */ } }
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function nextSpotlight() {
+  const ids = state.quotes.map((q) => q.id);
+  if (!ids.length) return null;
+  const exists = new Set(ids);
+  const d = ui.deck || loadDeck();
+
+  // drop deleted quotes; slip brand-new ones into the part of the deck you haven't seen yet
+  const seen = d.order.slice(0, d.pos).filter((id) => exists.has(id));
+  let rest = d.order.slice(d.pos).filter((id) => exists.has(id));
+  const known = new Set([...seen, ...rest]);
+  const fresh = ids.filter((id) => !known.has(id));
+  if (fresh.length) rest = shuffle([...rest, ...fresh]);
+
+  let deck;
+  if (rest.length) {
+    deck = { order: [...seen, ...rest], pos: seen.length };
+  } else {
+    // went through all of them: reshuffle, without repeating the last one straight away
+    const order = shuffle([...ids]);
+    if (order.length > 1 && order[0] === seen[seen.length - 1]) order.push(order.shift());
+    deck = { order, pos: 0 };
+  }
+  const id = deck.order[deck.pos];
+  deck.pos++;
+  ui.deck = deck;
+  saveDeck(deck);
+  return id;
+}
+
 function homeView() {
   const quotes = state.quotes;
   if (ui.spotlight && !quotes.some((q) => q.id === ui.spotlight)) ui.spotlight = null;
-  if (!ui.spotlight && quotes.length) ui.spotlight = quotes[Math.floor(Math.random() * quotes.length)].id;
+  if (!ui.spotlight && quotes.length) ui.spotlight = nextSpotlight();
   const spot = quotes.find((q) => q.id === ui.spotlight);
+  const deckInfo = ui.deck ? ` &middot; ${Math.min(ui.deck.pos, quotes.length)} of ${quotes.length}` : "";
 
   const today = new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const masthead = `<div class="masthead"><span>Vol. I</span><span>${esc(today)}</span><span>No. ${quotes.length}</span></div>`;
@@ -690,7 +764,7 @@ function homeView() {
     : spot ? `
       <section class="hero">
         ${masthead}
-        <div class="label" style="margin-top:18px">Random quote &middot; No. ${quoteNo(spot)}</div>
+        <div class="label" style="margin-top:18px">Random quote &middot; No. ${quoteNo(spot)}${deckInfo}</div>
         <blockquote>“${esc(spot.text)}”</blockquote>
         <div class="by">— ${(spot.people || []).map((p) => `<a href="#/person/${enc(keyOf(p))}">${esc(p)}</a>`).join(" &amp; ")}</div>
         <div class="credit">${[
@@ -1081,8 +1155,7 @@ const actions = {
   close() { closeModal(); },
 
   another() {
-    const others = state.quotes.filter((q) => q.id !== ui.spotlight);
-    if (others.length) ui.spotlight = others[Math.floor(Math.random() * others.length)].id;
+    ui.spotlight = nextSpotlight();
     render();
   },
 
