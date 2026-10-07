@@ -17,7 +17,7 @@ Black and white and very tuff. A members-only quotebook with logins, roles, cate
 | Categories | Browse by category (quotes can have as many as you want) |
 | + Add / + Request | Contributors and up add directly; enjoyers send requests |
 | Requests | Owners/admins approve, edit & approve, or reject requests |
-| Control Room | Owners change roles and download/restore backups |
+| Control Room | Owners let new sign-ups in, change roles, and download/restore backups |
 
 ### Roles
 
@@ -28,7 +28,7 @@ Black and white and very tuff. A members-only quotebook with logins, roles, cate
 | **contributor** | Add. Edit/delete only their own quotes (unless locked). |
 | **enjoyer** | Read only. Send requests for additions. |
 
-Everyone starts as **enjoyer** when they sign up. These rules are enforced by Firebase on the server (`firestore.rules`), so nobody can get around them by messing with the page.
+New sign-ups are **pending**: they can't see anything until an owner hits **Let in** on the Control Room page (they come in as enjoyers). **Turn away** blocks them; you can still let them in later. These rules are enforced by Firebase on the server (`firestore.rules`), so nobody can get around them by messing with the page.
 
 ---
 
@@ -68,8 +68,8 @@ Firebase console → **Authentication → Settings → Authorized domains** → 
 
 ### 4. Make you and Maggie owners
 
-1. You both open the site and sign in once (you'll show up as enjoyers).
-2. Firebase console → **Firestore Database** → `users` collection → click your document → change the `role` field from `enjoyer` to `owner`. Do the same for Maggie.
+1. You both open the site and sign in once (you'll be stuck "at the door" as pending).
+2. Firebase console → **Firestore Database** → `users` collection → click your document → change the `role` field from `pending` to `owner`. Do the same for Maggie.
 3. Refresh the site. From now on you can promote people from the **Control Room** page; no more console needed.
 
 ---

@@ -100,6 +100,8 @@ function hashString(s) {
 // ---------- roles & permissions (UI only; rules are the real gate) ----------
 
 const myRole = () => state.profile?.role || "none";
+// New sign-ups are "pending" until an owner lets them in; "denied" means an owner turned them away.
+const isMember = () => ROLES.includes(myRole());
 const isOwner = () => myRole() === "owner";
 const isStaff = () => ["owner", "admin"].includes(myRole());
 const canAdd = () => ["owner", "admin", "contributor"].includes(myRole());
@@ -295,7 +297,7 @@ async function ensureProfile(user) {
   if (snap.exists()) return;
   step("creating profile");
   const displayName = (pendingName || user.displayName || (user.email || "anon").split("@")[0]).slice(0, 40);
-  await fb.setDoc(ref, { displayName, email: user.email || "", role: "enjoyer", createdAt: fb.serverTimestamp() });
+  await fb.setDoc(ref, { displayName, email: user.email || "", role: "pending", createdAt: fb.serverTimestamp() });
 }
 
 let dataUnsubs = [];
@@ -303,6 +305,11 @@ function startDataListeners() {
   dataUnsubs.forEach((u) => u());
   dataUnsubs = [];
   if (!state.profile) return;
+  if (!isMember()) {
+    // pending/denied (or just demoted to it): the rules would refuse everything anyway
+    Object.assign(state, { quotes: [], quotesReady: false, users: [], requests: [] });
+    return;
+  }
   const { db } = fb;
   const opts = { serverTimestamps: "estimate" };
 
@@ -385,6 +392,7 @@ function render(reason) {
   else if (!state.profile) html = state.profileMissing
     ? errorView(`Signed in, but your member profile couldn't be created. An owner may need to publish the security rules (<code>npx firebase-tools deploy</code>).`)
     : loadingView();
+  else if (!isMember()) html = doorView();
   else html = (state.dataError ? `<div class="panel" role="alert"><h3>Can't load quotes</h3><p>${state.dataError}</p><button class="btn small" data-action="reload">Retry</button></div>` : "")
     + (VIEWS[name] || notFoundView)(parts.slice(1), query);
 
@@ -417,7 +425,7 @@ function renderChrome() {
   const here = parts[0] || "";
   document.getElementById("footer-count").textContent = state.quotesReady ? `${state.quotes.length} QUOTES AND COUNTING` : "";
 
-  if (!state.user || !state.profile) {
+  if (!state.user || !state.profile || !isMember()) {
     $nav.innerHTML = "";
     $who.innerHTML = "";
     $menuBtn.hidden = true;
@@ -436,7 +444,8 @@ function renderChrome() {
   ];
   if (isStaff()) links.push(["requests", `Requests${pending ? ` (${pending})` : ""}`]);
   else if (!canAdd()) links.push(["requests", "My Requests"]);
-  if (isStaff()) links.push(["control", "Control Room"]);
+  const waiting = state.users.filter((u) => u.role === "pending").length;
+  if (isStaff()) links.push(["control", `Control Room${waiting ? ` (${waiting})` : ""}`]);
 
   const activeFor = { person: "people", adder: "adders", category: "categories" };
   $nav.innerHTML = links
@@ -706,7 +715,7 @@ function loginView() {
     <div class="auth-box">
       <div class="kicker">The Quotebook &mdash; <b>Members only</b></div>
       <h1 class="page-title">${signup ? "Join up" : "Sign in"}</h1>
-      <p class="page-sub">The quotebook is members only. New accounts start as enjoyers; an owner can promote you.</p>
+      <p class="page-sub">The quotebook is members only. New accounts have to be let in by an owner before they can see anything.</p>
       <div class="form">
         <button class="btn solid" data-action="google">Continue with Google</button>
         <div class="divider">OR</div>
@@ -720,6 +729,24 @@ function loginView() {
             ${signup ? "" : `<button class="linkish" type="button" data-action="reset">Forgot password</button>`}
           </div>
         </form>
+      </div>
+    </div>`;
+}
+
+// Signed in but not a member yet (pending) or turned away (denied).
+// The page updates by itself the moment an owner lets them in.
+function doorView() {
+  const denied = myRole() === "denied";
+  return `
+    <div class="auth-box">
+      <div class="kicker">The Quotebook &mdash; <b>Members only</b></div>
+      <h1 class="page-title">${denied ? "Not this time" : "At the door"}</h1>
+      <p class="page-sub">${denied
+        ? "An owner didn't let this account in."
+        : `You're signed in as <b>${esc(state.profile.displayName)}</b>${state.profile.email ? ` (${esc(state.profile.email)})` : ""}. An owner has to let you in before you can read the book. This page opens up by itself once they do.`}</p>
+      <div class="row">
+        <button class="btn" data-action="rename">Change display name</button>
+        <button class="btn" data-action="signout">Sign out</button>
       </div>
     </div>`;
 }
@@ -819,7 +846,9 @@ function homeView() {
   ];
   if (isStaff()) tiles.push(["#/requests", "Review Requests", pending ? `${pending} waiting on you.` : "Nothing waiting."]);
   else if (!canAdd()) tiles.push(["#/requests", "My Requests", "See what got in."]);
-  if (isStaff()) tiles.push(["#/control", "Control Room", isOwner() ? "Roles, backups, restore." : "See who's who."]);
+  const waiting = state.users.filter((u) => u.role === "pending").length;
+  if (isStaff()) tiles.push(["#/control", "Control Room",
+    waiting ? `${waiting} waiting to be let in.` : isOwner() ? "Roles, backups, restore." : "See who's who."]);
 
   const latest = sortQuotes(quotes, "new").slice(0, 4);
 
@@ -1040,7 +1069,30 @@ function controlView() {
   if (!isStaff()) return notFoundView();
   const counts = {};
   for (const q of state.quotes) counts[q.addedBy] = (counts[q.addedBy] || 0) + 1;
-  const users = [...state.users].sort((a, b) => ROLES.indexOf(a.role) - ROLES.indexOf(b.role) || String(a.displayName).localeCompare(String(b.displayName)));
+  const users = [...state.users].filter((u) => ROLES.includes(u.role))
+    .sort((a, b) => ROLES.indexOf(a.role) - ROLES.indexOf(b.role) || String(a.displayName).localeCompare(String(b.displayName)));
+  const byJoined = (a, b) => millis(a.createdAt) - millis(b.createdAt);
+  const waiting = state.users.filter((u) => u.role === "pending").sort(byJoined);
+  const denied = state.users.filter((u) => u.role === "denied").sort(byJoined);
+
+  // owners get buttons; admins can see who's waiting but only owners decide
+  const doorRow = (u, buttons) => `
+    <div class="request">
+      <div class="row" style="justify-content:space-between">
+        <span><strong>${esc(u.displayName)}</strong>
+          <span style="font-family:var(--mono);font-size:12px;color:var(--dim)">&nbsp;${esc(u.email)} · signed up ${esc(fmtDate(millis(u.createdAt)))}</span></span>
+        ${isOwner() ? `<span class="row">${buttons}</span>` : ""}
+      </div>
+    </div>`;
+  const letIn = (u, label = "Let in") => `<button class="btn small solid" data-action="letin" data-uid="${esc(u.id)}">${label}</button>`;
+  const doorHtml = `
+    <h2 class="section-head">At the door (${waiting.length})</h2>
+    ${waiting.length
+      ? waiting.map((u) => doorRow(u, `${letIn(u)}<button class="btn small" data-action="turnaway" data-uid="${esc(u.id)}">Turn away</button>`)).join("")
+      : emptyBox("NOBODY WAITING", "New sign-ups show up here. They can't see anything until an owner lets them in.")}
+    ${denied.length ? `
+      <h2 class="section-head">Turned away (${denied.length})</h2>
+      ${denied.map((u) => doorRow(u, letIn(u, "Let in after all"))).join("")}` : ""}`;
 
   const rows = users.map((u) => `
     <tr>
@@ -1059,6 +1111,8 @@ function controlView() {
     <div class="kicker">§ 07 &mdash; <b>Staff only</b></div>
     <h1 class="page-title">Control Room</h1>
     <p class="page-sub">${isOwner() ? "You run this place." : "Admins can look. Only owners can change roles."}</p>
+
+    ${doorHtml}
 
     <h2 class="section-head">Members (${users.length})</h2>
     <div class="table-wrap">
@@ -1250,6 +1304,19 @@ const actions = {
       });
       toast("Rejected.");
     } catch (e) { fail(e); }
+  },
+
+  async letin(el) {
+    const u = state.users.find((x) => x.id === el.dataset.uid);
+    if (!u) return;
+    try { await fb.updateDoc(fb.doc(fb.db, "users", u.id), { role: "enjoyer" }); toast(`${u.displayName} is in (as an enjoyer).`); } catch (e) { fail(e); }
+  },
+
+  async turnaway(el) {
+    const u = state.users.find((x) => x.id === el.dataset.uid);
+    if (!u) return;
+    if (!(await confirmBox("Turn them away?", `${u.displayName} (${u.email}) won't be able to see anything. You can still let them in later.`, "Turn away"))) return;
+    try { await fb.updateDoc(fb.doc(fb.db, "users", u.id), { role: "denied" }); toast("Turned away."); } catch (e) { fail(e); }
   },
 
   async delrequest(el) {

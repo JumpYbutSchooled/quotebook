@@ -5,7 +5,10 @@ rules_version = '2';
 //   admin       – add, edit/delete own + contributors' quotes, can't touch owners'/admins' work. Can lock.
 //   contributor – add, edit/delete only their own quotes (if not locked).
 //   enjoyer     – read only, can send requests for additions.
-// Everyone who signs up starts as "enjoyer". Owners promote people from the Control Room page.
+//   pending     – just signed up, waiting for an owner to let them in. Can't see anything.
+//   denied      – an owner turned them away. Can't see anything.
+// Everyone who signs up starts as "pending". Owners let them in (as enjoyers) and promote people
+// from the Control Room page.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -19,7 +22,7 @@ service cloud.firestore {
     function isAdmin()  { return hasProfile() && myRole() == 'admin'; }
     function isStaff()  { return hasProfile() && myRole() in ['owner', 'admin']; }
     function canAdd()   { return hasProfile() && myRole() in ['owner', 'admin', 'contributor']; }
-    function isMember() { return hasProfile(); }
+    function isMember() { return hasProfile() && myRole() in ['owner', 'admin', 'contributor', 'enjoyer']; }
 
     // True if uid is NOT an owner/admin (i.e. an admin is allowed to manage their stuff).
     function isJunior(uid) {
@@ -45,9 +48,9 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if isStaff() || (signedIn() && request.auth.uid == uid);
 
-      // You can only create your own profile, and only as an enjoyer.
+      // You can only create your own profile, and only as pending (an owner has to let you in).
       allow create: if signedIn() && request.auth.uid == uid
-        && request.resource.data.role == 'enjoyer'
+        && request.resource.data.role == 'pending'
         && request.resource.data.keys().hasOnly(['displayName', 'email', 'role', 'createdAt']);
 
       // Owners can change anyone's role; everyone can rename themselves.
